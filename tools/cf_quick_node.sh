@@ -9,7 +9,11 @@
 #   ./tools/cf_quick_node.sh stop
 #   ./tools/cf_quick_node.sh restart
 #
-# 环境变量: UUID / PORT / NAME / OUT_DIR / RUN_DIR
+# 固定隧道（Cloudflare Named Tunnel）:
+#   TUNNEL_TOKEN=eyJ... PUBLIC_HOST=node.example.com ./tools/cf_quick_node.sh start
+#   要求 Cloudflare 后台该隧道的 Public Hostname 指向 http://localhost:18080
+#
+# 环境变量: UUID / PORT / NAME / OUT_DIR / RUN_DIR / TUNNEL_TOKEN / PUBLIC_HOST
 # 说明:
 #   - sing-box 只监听 127.0.0.1，公网入口由 cloudflared 隧道提供
 #   - 每次 start/restart 都会得到新的 *.trycloudflare.com 域名
@@ -128,8 +132,16 @@ cmd_start() {
   ensure_cloudflared
   ensure_singbox
   init_uuid "$UUID"
-  PORT="$(pick_port "$PORT")"
-  log "sing-box 监听端口: 127.0.0.1:$PORT"
+  if [[ -n "${TUNNEL_TOKEN:-}" ]]; then
+    [[ -n "${PUBLIC_HOST:-}" ]] || die "固定隧道模式需要设置 PUBLIC_HOST（例如 node.example.com）"
+    if [[ "$(port_free "$PORT")" != "yes" ]]; then
+      die "固定隧道模式要求 127.0.0.1:$PORT 可用；请释放端口，或用 -p 改端口并同步修改 Cloudflare ingress"
+    fi
+    log "sing-box 监听端口: 127.0.0.1:$PORT（固定隧道）"
+  else
+    PORT="$(pick_port "$PORT")"
+    log "sing-box 监听端口: 127.0.0.1:$PORT"
+  fi
 
   cat > "$RUN_DIR/server.json" <<EOF
 {
@@ -166,24 +178,50 @@ EOF
   fi
   log "sing-box 已启动 (pid $(cat "$RUN_DIR/sing-box.pid"))"
 
-  : > "$RUN_DIR/cloudflared.log"
-  nohup "$BIN_DIR/cloudflared" tunnel --url "http://127.0.0.1:$PORT" \
-      --no-autoupdate --protocol http2 --edge-ip-version 4 \
-      > "$RUN_DIR/cloudflared.log" 2>&1 &
-  echo $! > "$RUN_DIR/cloudflared.pid"
-
   local url="" host=""
-  for i in $(seq 1 60); do
-    url="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' \
-      "$RUN_DIR/cloudflared.log" 2>/dev/null | head -1 || true)"
-    [[ -n "$url" ]] && break
-    sleep 1
-  done
-  if [[ -z "$url" ]]; then
-    tail -25 "$RUN_DIR/cloudflared.log" || true
-    die "没有拿到 trycloudflare 域名"
+  : > "$RUN_DIR/cloudflared.log"
+
+  if [[ -n "${TUNNEL_TOKEN:-}" ]]; then
+    # 固定隧道：token 通过环境变量传入，避免出现在 ps 命令行
+    log "启动固定隧道 connector ..."
+    TUNNEL_TOKEN="$TUNNEL_TOKEN" nohup "$BIN_DIR/cloudflared" tunnel \
+        --no-autoupdate --protocol http2 run \
+        > "$RUN_DIR/cloudflared.log" 2>&1 &
+    echo $! > "$RUN_DIR/cloudflared.pid"
+
+    local i
+    for i in $(seq 1 45); do
+      grep -q 'Registered tunnel connection' "$RUN_DIR/cloudflared.log" 2>/dev/null && break
+      sleep 1
+    done
+    if ! grep -q 'Registered tunnel connection' "$RUN_DIR/cloudflared.log" 2>/dev/null; then
+      tail -25 "$RUN_DIR/cloudflared.log" || true
+      die "固定隧道连接失败，请检查 TUNNEL_TOKEN 是否有效"
+    fi
+    host="${PUBLIC_HOST#https://}"
+    host="${host%%/*}"
+    url="https://$host"
+    log "固定隧道已连接: $url"
+  else
+    log "启动临时隧道 ..."
+    nohup "$BIN_DIR/cloudflared" tunnel --url "http://127.0.0.1:$PORT" \
+        --no-autoupdate --protocol http2 --edge-ip-version 4 \
+        > "$RUN_DIR/cloudflared.log" 2>&1 &
+    echo $! > "$RUN_DIR/cloudflared.pid"
+
+    local i
+    for i in $(seq 1 60); do
+      url="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' \
+        "$RUN_DIR/cloudflared.log" 2>/dev/null | head -1 || true)"
+      [[ -n "$url" ]] && break
+      sleep 1
+    done
+    if [[ -z "$url" ]]; then
+      tail -25 "$RUN_DIR/cloudflared.log" || true
+      die "没有拿到 trycloudflare 域名"
+    fi
+    host="${url#https://}"
   fi
-  host="${url#https://}"
   printf '%s\n' "$url"  > "$RUN_DIR/tunnel_url.txt"
   printf '%s\n' "$host" > "$RUN_DIR/tunnel_host.txt"
   log "隧道已建立: $url"
@@ -211,6 +249,9 @@ EOF
     sleep 1
   done
   log "公网探测: HTTP ${code:-failed}（400/404 表示已到达本地 sing-box）"
+  if [[ -n "${TUNNEL_TOKEN:-}" && "$code" != "400" && "$code" != "404" ]]; then
+    warn "未命中本地 sing-box：请确认 Cloudflare Public Hostname 的 Service 指向 http://localhost:$PORT"
+  fi
   echo
   cmd_summary
 }
@@ -225,6 +266,7 @@ cmd_summary() {
 
   echo "======================================================================"
   echo " 节点已就绪（Cloudflare 临时隧道）"
+  echo "   模式   : $([[ -n "${TUNNEL_TOKEN:-}" ]] && echo '固定隧道 (named)' || echo '临时隧道 (quick)')"
   echo "   域名   : ${host:-unknown}"
   echo "   端口   : 443 (TLS)"
   echo "   UUID   : ${uuid:-unknown}"
