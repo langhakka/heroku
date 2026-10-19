@@ -14,6 +14,8 @@
 #   要求 Cloudflare 后台该隧道的 Public Hostname 指向 http://localhost:18080
 #
 # 环境变量: UUID / PORT / NAME / OUT_DIR / RUN_DIR / TUNNEL_TOKEN / PUBLIC_HOST
+# 便捷模式: 首次带 TUNNEL_TOKEN 启动后，token 会保存到 $RUN_DIR/token (600)
+#           之后直接 restart 即可复用；删除该文件即可停止记住 token。
 # 说明:
 #   - sing-box 只监听 127.0.0.1，公网入口由 cloudflared 隧道提供
 #   - 每次 start/restart 都会得到新的 *.trycloudflare.com 域名
@@ -29,6 +31,7 @@ BIN_DIR="$RUN_DIR/bin"
 NAME="${NAME:-CF-临时节点}"
 PORT="${PORT:-18080}"
 UUID="${UUID:-}"
+PORT_EXPLICIT=0
 
 mkdir -p "$RUN_DIR" "$BIN_DIR" "$OUT_DIR"
 
@@ -136,6 +139,19 @@ cmd_start() {
   local mode_file="$RUN_DIR/mode"
   local prev_mode=""
   [[ -f "$mode_file" ]] && prev_mode="$(cat "$mode_file")"
+
+  # 复用上次保存的固定隧道信息
+  if [[ -z "${TUNNEL_TOKEN:-}" && -s "$RUN_DIR/token" ]]; then
+    TUNNEL_TOKEN="$(cat "$RUN_DIR/token")"
+    log "读取已保存的隧道 token"
+  fi
+  if [[ -z "${PUBLIC_HOST:-}" && -s "$RUN_DIR/public_host" ]]; then
+    PUBLIC_HOST="$(cat "$RUN_DIR/public_host")"
+  fi
+  if [[ "$PORT_EXPLICIT" -eq 0 && -s "$RUN_DIR/port" ]]; then
+    PORT="$(cat "$RUN_DIR/port")"
+  fi
+
   if [[ -z "${TUNNEL_TOKEN:-}" && "$prev_mode" == "named" ]]; then
     die "上次运行的是固定隧道，但这次没有 TUNNEL_TOKEN；请带 token 运行，或执行 rm -f $mode_file 切回临时隧道"
   fi
@@ -210,6 +226,10 @@ EOF
     host="${host%%/*}"
     url="https://$host"
     printf 'named\n' > "$RUN_DIR/mode"
+    ( umask 077; printf '%s' "$TUNNEL_TOKEN" > "$RUN_DIR/token" )
+    chmod 600 "$RUN_DIR/token"
+    printf '%s\n' "$host" > "$RUN_DIR/public_host"
+    printf '%s\n' "$PORT" > "$RUN_DIR/port"
     log "固定隧道已连接: $url"
   else
     log "启动临时隧道 ..."
@@ -243,8 +263,13 @@ EOF
       >/dev/null 2>&1 || warn "segno 安装失败，二维码会被跳过"
   fi
 
+  local node_name="$NAME"
+  if [[ -n "${TUNNEL_TOKEN:-}" && "$NAME" == "CF-临时节点" ]]; then
+    node_name="CF-固定节点"
+  fi
+
   python3 "$REPO_ROOT/tools/vless_gen.py" \
-    --host "$host" --uuid "$UUID" --name "$NAME" --out "$OUT_DIR" >/dev/null
+    --host "$host" --uuid "$UUID" --name "$node_name" --out "$OUT_DIR" >/dev/null
 
   # 等 DNS 生效（失败也不影响链接，只是本机暂时解析不到）
   for i in $(seq 1 40); do
@@ -304,6 +329,9 @@ cmd_status() {
   echo "cloudflared: $cf"
   echo "local port : ${port:-unknown}"
   echo "tunnel     : ${url:-none}"
+  if [[ -s "$RUN_DIR/token" ]]; then
+    echo "token      : saved (600)"
+  fi
   if [[ -s "$OUT_DIR/vless.txt" ]]; then
     echo "link       : $(cat "$OUT_DIR/vless.txt")"
   fi
@@ -342,7 +370,7 @@ shift || true
 
 while getopts ":p:u:n:o:" opt; do
   case "$opt" in
-    p) PORT="$OPTARG" ;;
+    p) PORT="$OPTARG"; PORT_EXPLICIT=1 ;;
     u) UUID="$OPTARG" ;;
     n) NAME="$OPTARG" ;;
     o) OUT_DIR="$OPTARG"; mkdir -p "$OUT_DIR" ;;
