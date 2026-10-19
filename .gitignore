@@ -105,3 +105,6 @@ dist
 
 # generated VLESS node configs
 node-out/
+
+# quick tunnel node runtime
+node-out-cf/

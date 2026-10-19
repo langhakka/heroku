@@ -7,7 +7,8 @@ vless_gen.py —— 为 v2ray-heroku 生成 VLESS(ws+tls) 节点配置
   vless.txt            节点链接（可直接导入 v2rayN / Nekoray / Shadowrocket 等）
   subscription.txt     base64 订阅内容（把文件内容放到任意 HTTP 地址即为订阅）
   client-outbound.json 仅 outbound 片段，方便嵌入已有客户端配置
-  client-config.json   完整客户端配置（本地 socks5://127.0.0.1:10808）
+  client-config.json   完整客户端配置（V2Ray/Xray 格式，本地 socks5://127.0.0.1:10808）
+  client-config-singbox.json  sing-box 原生客户端配置（同上端口）
   server-config.json   服务端 Xray/V2Ray 配置（按仓库 config.json.tp 生成）
   node-info.json       本次生成的参数
   qr.png / qr.svg      节点链接二维码（需要 segno，未安装则跳过）
@@ -113,6 +114,35 @@ def build_client_config(outbound):
     }
 
 
+def build_singbox_config(host, port, uuid_str, path):
+    """sing-box 原生客户端配置（本地 socks5://127.0.0.1:10808）。"""
+    return {
+        "log": {"level": "warning"},
+        "inbounds": [{
+            "type": "socks",
+            "tag": "socks-in",
+            "listen": "127.0.0.1",
+            "listen_port": 10808
+        }],
+        "outbounds": [{
+            "type": "vless",
+            "tag": "vless-out",
+            "server": host,
+            "server_port": port,
+            "uuid": uuid_str,
+            "transport": {
+                "type": "ws",
+                "path": path,
+                "headers": {"Host": host}
+            },
+            "tls": {
+                "enabled": True,
+                "server_name": host
+            }
+        }]
+    }
+
+
 def build_server_config(uuid_str):
     """优先复用仓库的 config.json.tp，保持与服务端模板一致。"""
     template = os.path.join(REPO_ROOT, "config.json.tp")
@@ -192,6 +222,9 @@ def main():
           json.dumps(outbound, ensure_ascii=False, indent=2) + "\n")
     write(os.path.join(outdir, "client-config.json"),
           json.dumps(build_client_config(outbound), ensure_ascii=False, indent=2) + "\n")
+    write(os.path.join(outdir, "client-config-singbox.json"),
+          json.dumps(build_singbox_config(host, args.port, uuid_str, path),
+                     ensure_ascii=False, indent=2) + "\n")
     write(os.path.join(outdir, "server-config.json"),
           json.dumps(build_server_config(uuid_str), ensure_ascii=False, indent=2) + "\n")
     write(os.path.join(outdir, "node-info.json"), json.dumps({
