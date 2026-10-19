@@ -188,8 +188,12 @@ EOF
   printf '%s\n' "$host" > "$RUN_DIR/tunnel_host.txt"
   log "隧道已建立: $url"
 
-  python3 -c 'import segno' 2>/dev/null \
-    || warn "未安装 segno，二维码会被跳过（python3 -m pip install --user segno）"
+  if ! python3 -c 'import segno' 2>/dev/null; then
+    log "安装二维码依赖 segno ..."
+    python3 -m pip install --user --quiet --disable-pip-version-check \
+      --trusted-host pypi.org --trusted-host files.pythonhosted.org segno \
+      >/dev/null 2>&1 || warn "segno 安装失败，二维码会被跳过"
+  fi
 
   python3 "$REPO_ROOT/tools/vless_gen.py" \
     --host "$host" --uuid "$UUID" --name "$NAME" --out "$OUT_DIR" >/dev/null
