@@ -132,6 +132,14 @@ cmd_start() {
   ensure_cloudflared
   ensure_singbox
   init_uuid "$UUID"
+
+  local mode_file="$RUN_DIR/mode"
+  local prev_mode=""
+  [[ -f "$mode_file" ]] && prev_mode="$(cat "$mode_file")"
+  if [[ -z "${TUNNEL_TOKEN:-}" && "$prev_mode" == "named" ]]; then
+    die "上次运行的是固定隧道，但这次没有 TUNNEL_TOKEN；请带 token 运行，或执行 rm -f $mode_file 切回临时隧道"
+  fi
+
   if [[ -n "${TUNNEL_TOKEN:-}" ]]; then
     [[ -n "${PUBLIC_HOST:-}" ]] || die "固定隧道模式需要设置 PUBLIC_HOST（例如 node.example.com）"
     if [[ "$(port_free "$PORT")" != "yes" ]]; then
@@ -201,6 +209,7 @@ EOF
     host="${PUBLIC_HOST#https://}"
     host="${host%%/*}"
     url="https://$host"
+    printf 'named\n' > "$RUN_DIR/mode"
     log "固定隧道已连接: $url"
   else
     log "启动临时隧道 ..."
@@ -221,6 +230,7 @@ EOF
       die "没有拿到 trycloudflare 域名"
     fi
     host="${url#https://}"
+    printf 'quick\n' > "$RUN_DIR/mode"
   fi
   printf '%s\n' "$url"  > "$RUN_DIR/tunnel_url.txt"
   printf '%s\n' "$host" > "$RUN_DIR/tunnel_host.txt"
@@ -265,7 +275,7 @@ cmd_summary() {
   [[ -z "$uuid" && -f "$RUN_DIR/uuid.txt" ]] && uuid="$(cat "$RUN_DIR/uuid.txt")"
 
   echo "======================================================================"
-  echo " 节点已就绪（Cloudflare 临时隧道）"
+  echo " 节点已就绪（Cloudflare 隧道）"
   echo "   模式   : $([[ -n "${TUNNEL_TOKEN:-}" ]] && echo '固定隧道 (named)' || echo '临时隧道 (quick)')"
   echo "   域名   : ${host:-unknown}"
   echo "   端口   : 443 (TLS)"
