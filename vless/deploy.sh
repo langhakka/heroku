@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy.sh - 在 VPS 上一键搭建 VMess 节点 (Xray-core)
+# deploy.sh - 在 VPS 上一键搭建 VLESS 节点 (Xray-core)
 #
-#   模式 tls : VMess + WebSocket + TLS，Xray 直接监听 443（默认，推荐公网直连）
-#   模式 ws  : VMess + WebSocket（明文），用于套 Cloudflare / 反向代理 / PaaS
+#   模式 tls : VLESS + WebSocket + TLS，Xray 直接监听 443（默认，推荐公网直连）
+#   模式 ws  : VLESS + WebSocket（明文），由外层（Cloudflare / 反代）负责 TLS
 #
 # 用法:
 #   sudo bash deploy.sh --domain node.example.com
@@ -35,7 +35,7 @@ usage() {
   -u, --uuid <UUID>      节点 UUID, 省略则自动生成
   -p, --path <路径>      WebSocket 路径, 省略则随机生成
       --port <端口>      监听端口, 默认 tls:443 / ws:8080
-  -n, --name <备注>      生成的 vmess:// 链接里的节点名, 默认 vmess-<域名|IP>
+  -n, --name <备注>      生成的 vless:// 链接里的节点名, 默认 vless-<域名|IP>
       --ws                ws 模式: 明文 WebSocket (套 CDN / 反代时用)
       --cert <路径>       自定义证书 fullchain (tls 模式, 跳过 certbot)
       --key <路径>        自定义私钥 (tls 模式, 跳过 certbot)
@@ -71,7 +71,7 @@ done
 
 # ---- 参数校验与默认值 -------------------------------------------------------
 [[ -n "$UUID" ]] || UUID=$(gen_uuid)
-[[ -n "$WS_PATH" ]] || WS_PATH="/vmess-$(rand_hex 4)"
+[[ -n "$WS_PATH" ]] || WS_PATH="/vless-$(rand_hex 4)"
 WS_PATH="/${WS_PATH#/}"
 
 if [[ "$MODE" == "tls" ]]; then
@@ -85,7 +85,7 @@ else
     ADDR="${DOMAIN:-$(curl -fsS --max-time 8 https://api.ipify.org 2>/dev/null || echo 'YOUR_SERVER_IP')}"
     SNI="$DOMAIN"; TLS_FIELD="none"; ALPN_FIELD=""
 fi
-[[ -n "$NAME" ]] || NAME="vmess-${DOMAIN:-$ADDR}"
+[[ -n "$NAME" ]] || NAME="vless-${DOMAIN:-$ADDR}"
 
 # ---- 生成服务端配置 ---------------------------------------------------------
 render_config() {
@@ -97,11 +97,12 @@ render_config() {
     {
       "listen": "0.0.0.0",
       "port": ${PORT},
-      "protocol": "vmess",
+      "protocol": "vless",
       "settings": {
         "clients": [
-          { "id": "${UUID}", "alterId": 0, "level": 0 }
-        ]
+          { "id": "${UUID}", "level": 0, "flow": "" }
+        ],
+        "decryption": "none"
       },
       "streamSettings": {
         "network": "ws",
@@ -138,11 +139,12 @@ EOF
     {
       "listen": "0.0.0.0",
       "port": ${PORT},
-      "protocol": "vmess",
+      "protocol": "vless",
       "settings": {
         "clients": [
-          { "id": "${UUID}", "alterId": 0, "level": 0 }
-        ]
+          { "id": "${UUID}", "level": 0, "flow": "" }
+        ],
+        "decryption": "none"
       },
       "streamSettings": {
         "network": "ws",
@@ -167,35 +169,45 @@ EOF
     fi
 }
 
-# ---- 生成 vmess:// 分享链接 (v2rayN / v2rayNG / Shadowrocket 通用) ----------
+# ---- 生成 vless:// 分享链接 (v2rayN / v2rayNG / NekoBox / Shadowrocket 通用) ------
 render_link() {
-    local json
-    json=$(printf '{"v":"2","ps":"%s","add":"%s","port":"%s","id":"%s","aid":"0","scy":"auto","net":"ws","type":"none","host":"%s","path":"%s","tls":"%s","sni":"%s","alpn":"%s","fp":""}' \
-        "$NAME" "$ADDR" "$PORT" "$UUID" "$DOMAIN" "$WS_PATH" "$TLS_FIELD" "$SNI" "$ALPN_FIELD")
-    printf 'vmess://%s\n' "$(printf '%s' "$json" | b64_nowrap)"
+    local host_field="${DOMAIN:-$ADDR}" pathe name
+    pathe=${WS_PATH//\//%2F}
+    name=${NAME// /%20}
+    if [[ "$TLS_FIELD" == "tls" ]]; then
+        printf 'vless://%s@%s:%s?encryption=none&security=tls&type=ws&host=%s&path=%s&sni=%s&alpn=http%%2F1.1#%s\n' \
+            "$UUID" "$ADDR" "$PORT" "$host_field" "$pathe" "$SNI" "$name"
+    else
+        printf 'vless://%s@%s:%s?encryption=none&security=none&type=ws&host=%s&path=%s#%s\n' \
+            "$UUID" "$ADDR" "$PORT" "$host_field" "$pathe" "$name"
+    fi
 }
 
 # ---- 生成客户端 outbound 配置 (手动配置 / 排查用) ---------------------------
 render_client_json() {
+    local tls_json=""
+    if [[ "$TLS_FIELD" == "tls" ]]; then
+        tls_json=$(printf ',
+        "tlsSettings": { "serverName": "%s", "alpn": ["http/1.1"] }' "${SNI:-$ADDR}")
+    fi
     cat <<EOF
 {
   "outbounds": [
     {
-      "protocol": "vmess",
+      "protocol": "vless",
       "settings": {
         "vnext": [
           {
             "address": "${ADDR}",
             "port": ${PORT},
-            "users": [ { "id": "${UUID}", "alterId": 0, "security": "auto" } ]
+            "users": [ { "id": "${UUID}", "encryption": "none", "flow": "" } ]
           }
         ]
       },
       "streamSettings": {
         "network": "ws",
         "security": "${TLS_FIELD}",
-        "wsSettings": { "path": "${WS_PATH}", "headers": { "Host": "${DOMAIN:-$ADDR}" } },
-        "tlsSettings": { "serverName": "${SNI:-$ADDR}", "alpn": ["http/1.1"] }
+        "wsSettings": { "path": "${WS_PATH}", "headers": { "Host": "${DOMAIN:-$ADDR}" } }${tls_json}
       }
     }
   ]
@@ -208,7 +220,7 @@ if [[ $PRINT_ONLY -eq 1 ]]; then
     echo "===== ${XRAY_CONFIG} ====="
     render_config
     echo
-    echo "===== vmess:// 分享链接 ====="
+    echo "===== vless:// 分享链接 ====="
     render_link
     echo
     echo "===== 客户端 JSON (手动配置用) ====="
@@ -318,7 +330,7 @@ LINK=$(render_link)
 echo
 cat <<EOF
 ==================== 部署完成 ====================
-模式        : $MODE (VMess + WebSocket$( [[ "$MODE" == tls ]] && echo ' + TLS' ))
+协议        : VLESS + WebSocket$( [[ "$MODE" == tls ]] && echo ' + TLS' )  (mode=$MODE)
 地址        : $ADDR
 端口        : $PORT
 UUID        : $UUID
@@ -327,7 +339,7 @@ $( [[ "$MODE" == tls ]] && echo "证书        : $CERT_FILE" )
 配置文件    : $XRAY_CONFIG
 查看日志    : journalctl -u xray -f
 
------ vmess:// 分享链接 (复制到 v2rayN / v2rayNG / Shadowrocket) -----
+----- vless:// 分享链接 (复制到 v2rayN / v2rayNG / NekoBox / Shadowrocket) -----
 $LINK
 
 ----- 客户端 JSON (手动配置用) -----

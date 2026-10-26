@@ -84,10 +84,15 @@ obj=json.loads(text.split("客户端 JSON (手动配置用) =====")[1])
 out=obj["outbounds"][0]
 out["settings"]["vnext"][0]["address"]="127.0.0.1"
 out["streamSettings"]["wsSettings"]["headers"]["Host"]="127.0.0.1"
-out["streamSettings"]["tlsSettings"]["serverName"]="node.example.com"
+tls=out["streamSettings"].get("tlsSettings")
 pinned=sys.argv[1]
 if pinned:
-    out["streamSettings"]["tlsSettings"]["pinnedPeerCertSha256"]=pinned
+    if tls is None:
+        tls=out["streamSettings"]["tlsSettings"]={}
+    tls["serverName"]="node.example.com"
+    tls["pinnedPeerCertSha256"]=pinned
+elif tls is not None:
+    tls["serverName"]="node.example.com"
 cfg={"log":{"loglevel":"warning"},
      "inbounds":[{"listen":"127.0.0.1","port":int(sys.argv[2]),"protocol":"socks","settings":{"udp":False}}],
      "outbounds":[out]}
@@ -136,7 +141,7 @@ PY
     && ok "tls 模式配置通过 xray -test" || bad "tls 模式配置校验失败"
 
 # ---- 2. ws 模式端到端 -------------------------------------------------------
-step "ws 模式端到端 (SOCKS -> VMess/WS -> 服务端 -> 外网)"
+step "ws 模式端到端 (SOCKS -> VLESS/WS -> 服务端 -> 外网)"
 python3 - "$WORK" <<'PY'
 import json,sys,os
 w=sys.argv[1]
@@ -179,7 +184,7 @@ else
 fi
 
 # ---- 4. tls 模式端到端 (证书 pinning) ---------------------------------------
-step "tls 模式端到端 (自签 CA + pinnedPeerCertSha256)"
+step "tls 模式端到端 (VLESS + 自签 CA + pinnedPeerCertSha256)"
 PIN=$(openssl x509 -in "$WORK/leaf.crt" -outform der | sha256sum | cut -d' ' -f1)
 gen_client tls 18602 18612 "$PIN" > "$WORK/tls_cli.json"
 start "$WORK/tls.json" "$WORK/tls_srv.log"

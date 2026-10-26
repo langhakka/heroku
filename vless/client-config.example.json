@@ -1,16 +1,16 @@
 {
   "_comment": [
     "客户端 JSON 配置样例（V2Ray / Xray 内核通用，可整段粘到客户端配置的 outbounds 里）",
-    "占位符：YOUR_UUID / node.example.com / /vmess-xxxxxxxx",
+    "协议是 VLESS：注意没有 alterId、没有加密方式(security/cipher)这两项，只有 encryption=none",
+    "占位符：YOUR_UUID / node.example.com / /vless-xxxxxxxx",
     "tls 直连：security = tls，port = 443",
-    "套 Cloudflare CDN：address/host/serverName 都填 CDN 域名，port = 443，security = tls",
-    "纯内网/反代调试：security = none，port = 8080",
-    "自签证书：客户端界面里勾选\"允许不安全\"即可；Xray 26+ 内核已移除 allowInsecure 字段，改用 pinnedPeerCertSha256 或把证书装进系统信任"
+    "套 Cloudflare CDN：security = tls，port = 443，address/Host/serverName 都填 CDN 域名",
+    "本地/反代调试：security = none，port = 8080（Xray 26 只允许私有地址上 VLESS 不加密）"
   ],
   "outbounds": [
     {
-      "tag": "vmess-node",
-      "protocol": "vmess",
+      "tag": "vless-node",
+      "protocol": "vless",
       "settings": {
         "vnext": [
           {
@@ -19,9 +19,8 @@
             "users": [
               {
                 "id": "YOUR_UUID",
-                "alterId": 0,
-                "security": "auto",
-                "level": 0
+                "encryption": "none",
+                "flow": ""
               }
             ]
           }
@@ -31,7 +30,7 @@
         "network": "ws",
         "security": "tls",
         "wsSettings": {
-          "path": "/vmess-xxxxxxxx",
+          "path": "/vless-xxxxxxxx",
           "headers": {
             "Host": "node.example.com"
           }

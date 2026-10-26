@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # =============================================================================
-# local-node.sh - 在本机起一个临时 VMess 节点，用于本地测试
+# local-node.sh - 在本机起一个临时 VLESS 节点，用于本地测试
 #
 #   bash test/local-node.sh                 # 启动（WS 明文，127.0.0.1:18308）
 #   bash test/local-node.sh --host 0.0.0.0  # 允许本机之外访问（如需端口转发）
 #   bash test/local-node.sh --status        # 查看状态
 #   bash test/local-node.sh --stop          # 停止
 #
-# 起来后会打印 vmess:// 链接，以及一个本地 SOCKS5 端口，用 curl 即可验证链路是否真通。
+# 起来后会打印 vless:// 链接，以及一个本地 SOCKS5 端口，用 curl 即可验证链路是否真通。
 # 注意: 这是测试用的临时节点（明文 WS、临时目录、随机器销毁而消失），长期使用请跑 deploy.sh
 # =============================================================================
 set -uo pipefail
 
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-STATE_DIR="${VMESS_LOCAL_DIR:-/tmp/vmess-local}"
+STATE_DIR="${VLESS_LOCAL_DIR:-/tmp/vless-local}"
 XRAY_BIN="$STATE_DIR/xray"
 SRV_CFG="$STATE_DIR/server.json"
 CLI_CFG="$STATE_DIR/client.json"
@@ -36,6 +36,8 @@ usage() {
       --port <端口>    节点监听端口, 默认 18308
       --socks <端口>   本地 SOCKS5 客户端端口, 默认 1080 (填 0 则不启动客户端)
       --host <地址>    服务端绑定地址, 默认 127.0.0.1; 需要外部访问用 0.0.0.0
+                       (注意: Xray 26 只允许私有地址/本地回环上的 VLESS 不加密;
+                        公网入口请用 Cloudflare 隧道或 deploy.sh 的 TLS 模式)
       --path <路径>    WS 路径, 默认随机
       --uuid <UUID>    UUID, 默认随机
       --status         查看运行状态
@@ -83,15 +85,19 @@ stop_all() {
     done
 }
 
+cfg_port() { # $1=配置文件 -> 打印第一个 port 值
+    [[ -f "$1" ]] && grep -o '"port": [0-9]*' "$1" | head -1 | grep -o '[0-9]*' || echo "?"
+}
+
 status_all() {
     if is_running "$SRV_PID"; then
-        echo "服务端: 运行中 pid=$(pid_of "$SRV_PID") 端口=$PORT"
+        echo "服务端: 运行中 pid=$(pid_of "$SRV_PID") 端口=$(cfg_port "$SRV_CFG")"
         [[ -f "$SRV_CFG" ]] && grep -o '"path": "[^"]*"' "$SRV_CFG" | head -1
     else
         echo "服务端: 未运行"
     fi
     if is_running "$CLI_PID"; then
-        echo "客户端: 运行中 pid=$(pid_of "$CLI_PID") SOCKS=127.0.0.1:$SOCKS"
+        echo "客户端: 运行中 pid=$(pid_of "$CLI_PID") SOCKS=127.0.0.1:$(cfg_port "$CLI_CFG")"
     else
         echo "客户端: 未运行"
     fi
@@ -125,8 +131,8 @@ cat > "$SRV_CFG" <<EOF
     {
       "listen": "${LISTEN}",
       "port": ${PORT},
-      "protocol": "vmess",
-      "settings": { "clients": [ { "id": "${UUID}", "alterId": 0, "level": 0 } ] },
+      "protocol": "vless",
+      "settings": {"clients": [ { "id": "${UUID}", "level": 0, "flow": "" } ], "decryption": "none"},
       "streamSettings": {
         "network": "ws",
         "security": "none",
@@ -159,13 +165,13 @@ if [[ "$SOCKS" != "0" ]]; then
   ],
   "outbounds": [
     {
-      "protocol": "vmess",
+      "protocol": "vless",
       "settings": {
         "vnext": [
           {
             "address": "127.0.0.1",
             "port": ${PORT},
-            "users": [ { "id": "${UUID}", "alterId": 0, "security": "auto" } ]
+            "users": [ { "id": "${UUID}", "encryption": "none", "flow": "" } ]
           }
         ]
       },
@@ -183,12 +189,12 @@ EOF
 fi
 
 sleep 1.5
-LINK=$(python3 "$HERE/gen-vmess-link.py" --add "$DIAL_HOST" --port "$PORT" --id "$UUID" \
-        --path "$WS_PATH" --host "$DIAL_HOST" --ps "local-vmess")
+LINK=$(python3 "$HERE/gen-node-link.py" --add "$DIAL_HOST" --port "$PORT" --id "$UUID" \
+        --path "$WS_PATH" --host "$DIAL_HOST" --ps "local-vless")
 IP_ALL=$(hostname -I 2>/dev/null | xargs)
 cat <<EOF
 
-==================== 本机临时 VMess 节点已启动 ====================
+==================== 本机临时 VLESS 节点已启动 ====================
 监听        : ${LISTEN}:${PORT}  (WS 明文, path=${WS_PATH})
 UUID        : ${UUID}
 本机 IP     : ${IP_ALL:-127.0.0.1}
@@ -196,7 +202,7 @@ UUID        : ${UUID}
 服务端日志  : ${SRV_LOG}
 $( [[ "$SOCKS" != "0" ]] && echo "SOCKS 客户端: 127.0.0.1:${SOCKS}" )
 
------ vmess:// 分享链接 -----
+----- vless:// 分享链接 -----
 ${LINK}
 
 ----- 立刻验证链路是否真通 -----
