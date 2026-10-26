@@ -12,7 +12,7 @@
 set -uo pipefail
 
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-STATE_DIR="${VLESS_DEMO_DIR:-/tmp/vless-demo}"
+STATE_DIR="${VLESS_DEMO_DIR:-$HERE/../.cache/vless-demo}"
 XRAY_BIN="$STATE_DIR/xray"
 CF_BIN="$STATE_DIR/cloudflared"
 SRV_CFG="$STATE_DIR/server.json"
