@@ -1,0 +1,48 @@
+{
+  "_comment": [
+    "客户端 JSON 配置样例（V2Ray / Xray 内核通用，可整段粘到客户端配置的 outbounds 里）",
+    "占位符：YOUR_UUID / node.example.com / /vmess-xxxxxxxx",
+    "tls 直连：security = tls，port = 443",
+    "套 Cloudflare CDN：address/host/serverName 都填 CDN 域名，port = 443，security = tls",
+    "纯内网/反代调试：security = none，port = 8080",
+    "自签证书：客户端界面里勾选\"允许不安全\"即可；Xray 26+ 内核已移除 allowInsecure 字段，改用 pinnedPeerCertSha256 或把证书装进系统信任"
+  ],
+  "outbounds": [
+    {
+      "tag": "vmess-node",
+      "protocol": "vmess",
+      "settings": {
+        "vnext": [
+          {
+            "address": "node.example.com",
+            "port": 443,
+            "users": [
+              {
+                "id": "YOUR_UUID",
+                "alterId": 0,
+                "security": "auto",
+                "level": 0
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "/vmess-xxxxxxxx",
+          "headers": {
+            "Host": "node.example.com"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "node.example.com",
+          "alpn": [
+            "http/1.1"
+          ]
+        }
+      }
+    }
+  ]
+}

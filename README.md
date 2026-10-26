@@ -222,3 +222,13 @@ path 是 **/ws**
 别人的配置教程参考，https://v2raytech.com/v2rayn-config-tutorial/.
 
 ![v2rayN](/readme-data/V2rayN.jpg)
+
+## 自建 VPS 的 VMess 节点（独立方案）
+
+不想用 Heroku、只想在自己的 VPS 上开一个 VMess 节点？见 [vmess/README.md](./vmess/README.md)。
+
+```bash
+sudo bash vmess/deploy.sh --domain node.example.com --email you@example.com
+```
+
+脚本会自动安装 Xray-core、生成 UUID 和随机 WS 路径、签发 Let's Encrypt 证书、配置 systemd 开机自启，并直接打印可导入客户端的 `vmess://` 链接；支持 `--ws` 模式（套 Cloudflare CDN）和 `--print-only`（只在本地打印配置，不动系统）。
