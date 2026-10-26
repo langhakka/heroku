@@ -153,6 +153,17 @@ certbot renew --dry-run        # 测试证书续期（已自动配置续期后�
 
 证书续期由 `/etc/letsencrypt/renewal-hooks/deploy/reload-xray.sh` 自动处理，不用手动管。
 
+
+### 为什么推荐 VLESS 而不是 VMess
+
+VMess 的请求头里带一个「加密方式」字段（auto / aes-128-gcm / chacha20-poly1305 / none / zero），客户端填错或被客户端内核丢弃时，服务端只能拒绝：
+
+```
+rejected proxy/vmess/encoding: unknown security type: UNKNOWN
+```
+
+这种失败很迷惑：TLS/WebSocket 都已经握手成功、隧道也是通的，看起来像「网络问题」，实际只差一个字段。VLESS 没有这个字段（`encryption: none`，安全全靠传输层 TLS + UUID），少一层协商，也就少一类坑。
+
 ## 常见问题
 
 | 现象 | 排查 |
@@ -160,6 +171,7 @@ certbot renew --dry-run        # 测试证书续期（已自动配置续期后�
 | 客户端连不上，日志无记录 | 云厂商安全组 / `ufw` 是否放行端口：`ufw allow 443/tcp` |
 | 证书申请失败 | 域名 A 记录未生效、80 端口被占（Nginx/Apache 先停）、或域名被墙；可先 `dig +short node.example.com` 核对 |
 | TLS 握手失败 | 客户端 SNI/Host 必须与证书域名一致；`alpn` 用 `http/1.1`（h2 对 ws 不安全） |
+| 客户端连上但服务端日志报 `proxy/vmess/encoding: unknown security type: UNKNOWN` | 客户端发的 VMess 加密方式为空/非法。把「加密方式」显式设为 `aes-128-gcm` 或 `auto`（alterId=0），或直接改用 VLESS（无加密字段，见下） |
 | 能连但打不开网页 | 服务端 `freedom` 出站被机房限制，或目标站封 IP；先 `curl -I https://www.google.com` 在 VPS 上验证出网 |
 | 换端口/路径后旧客户端失效 | 路径和端口是节点凭据的一部分，客户端必须同步更新 |
 
