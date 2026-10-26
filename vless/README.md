@@ -151,6 +151,29 @@ bash test/demo-node.sh --stop     # 全部停掉
 3. **链接按客户端视角生成**：走隧道时端口填 443、`security=tls`（TLS 由 Cloudflare 边缘提供），源站保持明文 WS，不依赖任何证书。
 
 > 域名每次重启都变、进程随机器销毁消失 —— 只适合临时验证，长期用 `deploy.sh`。
+## 掉线自动拉起（watchdog）
+
+```bash
+bash test/watchdog.sh start     # 后台守护（demo-node.sh 默认已经帮你起好）
+bash test/watchdog.sh status    # 守护/节点/隧道状态 + 当前链接 + 最近事件
+bash test/watchdog.sh stop --all
+```
+
+每 15 秒检查一次，能覆盖这些情况（都实测过）：
+
+| 情况 | 守护行为 | 实测恢复时间 |
+| --- | --- | --- |
+| xray 进程挂了 | 用现有 `server.json` 重启，域名/链接不变 | ~1 秒 |
+| cloudflared 挂了 | 重建 quick tunnel，**域名会变**，自动重写 `.cache/vless-demo/link.txt` | ~20 秒 |
+| 隧道活着但握手坏了（每 5 分钟一次 101 自检） | 杀掉重建隧道并更新链接 | ≤ 20 秒 |
+
+写这个守护时踩到两个坑，都已修（留给以后参考）：
+
+1. **僵尸进程骗过存活检查**：`kill -0 <pid>` 对 defunct 进程也返回成功，必须再看 `/proc/<pid>/stat` 的状态位是不是 `Z`，否则守护以为节点还活着、永远不重启；
+2. **旧日志污染新域名**：cloudflared 日志是追加写，grep 到的是上一次的域名，导致新隧道配了旧域名。重建前必须先把日志清空。
+
+**它管不到的情况**：整个容器被重建（`/tmp` 清空、所有进程消失、uptime 归零）。容器里没有 systemd/cron（PID 1 是平台自己的进程），守护进程会一起消失，没有任何容器内自启手段。这种只能靠：新会话里跑一次 `bash test/watchdog.sh start`（或 `demo-node.sh`），或者用真 VPS。
+
 > **状态目录为什么不在 /tmp**：`/tmp` 会被环境清理（我实测过一次容器重启后 `/tmp` 全空、节点进程全没了），所以两个测试脚本把二进制和配置放在仓库下的 `.cache/`（已在 `.gitignore` 里），重启后不必重新下载，恢复只需再跑一次 `bash test/demo-node.sh`。
 
 

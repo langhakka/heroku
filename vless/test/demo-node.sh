@@ -28,6 +28,7 @@ WS_PATH=""
 UUID=""
 ACTION=start
 TUNNEL=1
+WATCH=1
 
 usage() {
     cat <<'USAGE'
@@ -37,6 +38,7 @@ usage() {
       --path <路径>   WS 路径, 默认随机
       --uuid <UUID>   UUID, 默认随机
       --no-tunnel     只起本地节点, 不开 Cloudflare 隧道
+      --no-watch      不起守护进程（默认会起，掉线自动拉起）
       --status        查看状态 + 当前链接
       --stop          停止节点和隧道
   -h, --help          帮助
@@ -49,6 +51,7 @@ while [[ $# -gt 0 ]]; do
         --path) WS_PATH="$2"; shift 2 ;;
         --uuid) UUID="$2"; shift 2 ;;
         --no-tunnel) TUNNEL=0; shift ;;
+        --no-watch) WATCH=0; shift ;;
         --status) ACTION=status; shift ;;
         --stop) ACTION=stop; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -248,3 +251,8 @@ bash test/demo-node.sh --status
 bash test/demo-node.sh --stop
 ============================================================
 EOF
+
+if [[ $WATCH -eq 1 ]]; then
+    bash "$HERE/test/watchdog.sh" start 2>/dev/null | sed 's/^/[+] /'
+    echo "[+] 守护已启动：进程掉了会自动拉起（bash test/watchdog.sh status / stop）"
+fi
