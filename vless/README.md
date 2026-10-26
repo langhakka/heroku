@@ -134,6 +134,24 @@ bash gen-node-link.py --add xxxx.trycloudflare.com --port 443 --id <UUID> \
 
 > 注意两点：①无 TLS 的公网入口不能跑 VLESS（Xray 26 只允许私有地址/回环上不加密），所以隧道场景必须由外层（CF）提供 TLS；②隧道方案仅用于连通性验证，延迟取决于本机网络，进程/域名随环境销毁而失效。
 
+## 一键起「可分享的临时节点」（demo）
+
+想马上拿到一条手机也能连的测试链路：
+
+```bash
+bash test/demo-node.sh            # 起 VLESS 节点 + Cloudflare 临时隧道，直接打印可分享链接
+bash test/demo-node.sh --status   # 查看隧道域名与当前链接
+bash test/demo-node.sh --stop     # 全部停掉
+```
+
+它会自动处理三个特别容易踩的坑（都是我实际踩过的）：
+
+1. **等域名 DNS 真正生效**再打印链接——quick tunnel 的域名要 10~60 秒才出现在 DNS 里，太早生成的链接客户端会报"无法解析主机"；
+2. **握手自检**：用 DoH 解析出 IP（绕开本地 DNS 负缓存），`--resolve` 直连做 WebSocket 升级，必须看到 `101 Switching Protocols` 才算成功；
+3. **链接按客户端视角生成**：走隧道时端口填 443、`security=tls`（TLS 由 Cloudflare 边缘提供），源站保持明文 WS，不依赖任何证书。
+
+> 域名每次重启都变、进程随机器销毁消失 —— 只适合临时验证，长期用 `deploy.sh`。
+
 ## 已验证（本地端到端自测）
 
 不用 VPS 也能验证，直接跑：
