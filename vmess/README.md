@@ -94,6 +94,34 @@ Cloudflare 免费版支持 WebSocket，`--port 443` 走 CF 的 TLS，源站只�
 >
 > 用 Let's Encrypt 正式证书则无需任何额外设置。
 
+## 本机快速测试（不起服务、不动系统）
+
+只想先验证链路通不通，不想装 systemd 服务：
+
+```bash
+bash test/local-node.sh          # 起临时节点 127.0.0.1:18308 + 本地 SOCKS5 127.0.0.1:1080
+curl -sS --socks5-hostname 127.0.0.1:1080 https://api.ipify.org   # 能返回 IP 就说明通了
+bash test/local-node.sh --status
+bash test/local-node.sh --stop
+```
+
+脚本会打印一条 `vmess://` 链接，可直接导入客户端（该链接指向 127.0.0.1，供本机客户端使用）。
+
+想让手机/其他机器连进来，用 Cloudflare 临时隧道（免账号，域名每次重启都变）：
+
+```bash
+# 1. 下载并启动隧道，指向本地节点
+curl -fsSL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+chmod +x cloudflared && ./cloudflared tunnel --no-autoupdate --url http://127.0.0.1:18308
+# 日志里会出现 https://xxxx.trycloudflare.com
+
+# 2. 用隧道域名生成 tls + ws 链接
+bash gen-vmess-link.py --add xxxx.trycloudflare.com --port 443 --id <UUID> \
+    --path <WS路径> --host xxxx.trycloudflare.com --tls
+```
+
+> 隧道方案仅用于连通性验证：延迟取决于本机网络，进程/域名随环境销毁而失效。
+
 ## 已验证（本地端到端自测）
 
 不用 VPS 也能验证，直接跑：
