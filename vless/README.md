@@ -192,6 +192,17 @@ bash test/demo-node.sh      # 自动沿用 固定域名 + 固定 UUID/路径 + �
 
 > 踩坑记录：命名隧道（token 方式）的 Public Hostname 是**远端配置**，端口必须和本地节点一致（我这边实测你的是 `localhost:8001`，所以节点改用 8001）。连接器注册要 10~40 秒，脚本会先等 `Registered tunnel connection` 再做 101 自检，否则会误报握手失败。
 
+#### 整个容器被重建后（`.cache` 也没了）的恢复
+
+`identity.env` / `tunnel.env` 都在 `.cache/`（gitignore，不会进仓库），所以**容器重建 = 身份和命名隧道 token 一起丢**。这时无参 `bash test/demo-node.sh` 只能给你一个**全新的** UUID/路径 + 随机 `trycloudflare.com` 域名，旧客户端配置必然失效。想恢复成"和以前完全一样"，必须把这三样重新喂回去：
+
+```bash
+bash test/demo-node.sh --port 8001 --uuid <原UUID> --path <原路径> \
+    --tunnel-token <CF 隧道 token> --tunnel-host <原固定域名>
+```
+
+也就是说：**UUID/路径/端口 + 隧道 token 要自己留一份在容器外**（密码管理器 / GitHub Secrets），仓库里只放脚本。实测一次容器重建后的恢复：新起节点拿到 `127.0.0.1:8001` + 新 UUID/路径 + 新 quick tunnel 域名，101 自检通过，客户端 SOCKS → VLESS/WS/TLS → 隧道 → 出网正常（`curl --socks5-hostname ... https://api.ipify.org` 返回出口 IP），只是链接要重新导入客户端。
+
 ### 3. 但要说清楚：固定域名 ≠ 自启
 
 固定域名解决的是"客户端配置不用改"，**不解决进程随容器消失**。要做到"机器重启也自动回来"，仍然需要 systemd（真 VPS 上 `deploy.sh` 就是），容器里没有 systemd/cron。
