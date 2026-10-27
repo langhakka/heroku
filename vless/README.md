@@ -180,6 +180,18 @@ bash test/demo-node.sh \
 
 脚本会把 token/域名记到 `.cache/vless-demo/tunnel.env`（600 权限），watchdog 重连时也用命名隧道，**域名不会再变**。token 无效时会明确报错并退回"只起本地节点"，不会给你一条连不上的链接。
 
+### 2.5 配好之后：一条无参命令即可原样恢复
+
+命名隧道参数（`tunnel.env`）、UUID/路径/端口（`identity.env`）都会记住，所以容器重启后只需：
+
+```bash
+bash test/demo-node.sh      # 自动沿用 固定域名 + 固定 UUID/路径 + 原端口，链接与上次完全一致
+```
+
+实测：无参启动 → `监听 127.0.0.1:8001`、`UUID e1c5e5c8…`、`路径 /dl-bdbf98fa`、`域名 aida.adg007.kdns.fr`，自检 `101 Switching Protocols`，客户端配置无需任何改动。
+
+> 踩坑记录：命名隧道（token 方式）的 Public Hostname 是**远端配置**，端口必须和本地节点一致（我这边实测你的是 `localhost:8001`，所以节点改用 8001）。连接器注册要 10~40 秒，脚本会先等 `Registered tunnel connection` 再做 101 自检，否则会误报握手失败。
+
 ### 3. 但要说清楚：固定域名 ≠ 自启
 
 固定域名解决的是"客户端配置不用改"，**不解决进程随容器消失**。要做到"机器重启也自动回来"，仍然需要 systemd（真 VPS 上 `deploy.sh` 就是），容器里没有 systemd/cron。

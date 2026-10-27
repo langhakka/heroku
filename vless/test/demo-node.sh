@@ -26,6 +26,7 @@ HOST_FILE="$STATE_DIR/host.txt"
 IDENT_FILE="$STATE_DIR/identity.env"   # 固定 UUID / WS 路径，重启后复用
 TUNNEL_ENV="$STATE_DIR/tunnel.env"     # 命名隧道（固定域名）的参数
 PORT=18308
+PORT_SET=0
 WS_PATH=""
 UUID=""
 ACTION=start
@@ -55,7 +56,7 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --port) PORT="$2"; shift 2 ;;
+        --port) PORT="$2"; PORT_SET=1; shift 2 ;;
         --path) WS_PATH="$2"; shift 2 ;;
         --uuid) UUID="$2"; shift 2 ;;
         --no-tunnel) TUNNEL=0; shift ;;
@@ -108,6 +109,13 @@ status_all() {
     [[ -f "$LINK_FILE" ]] && { echo; echo "当前链接:"; cat "$LINK_FILE"; }
 }
 
+# 若之前配过命名隧道（tunnel.env 存在），自动沿用，避免重启后退回随机域名
+if [[ $TUNNEL -eq 1 && -z "$TUNNEL_TOKEN" && -f "$TUNNEL_ENV" ]]; then
+    # shellcheck disable=SC1090
+    source "$TUNNEL_ENV"
+    [[ -z "$TUNNEL_HOST" ]] && TUNNEL_HOST="${TUNNEL_HOST:-}"
+fi
+
 # 命名隧道必须同时给域名，否则会拉起一个没有域名的连接（在停掉现有节点之前就拦掉）
 if [[ -n "$TUNNEL_TOKEN" && -z "$TUNNEL_HOST" ]]; then
     echo "错误: 用了 --tunnel-token 必须同时指定 --tunnel-host（CF 后台已路由到该隧道的域名）" >&2
@@ -155,11 +163,12 @@ if [[ $NEW_IDENT -eq 0 && -f "$IDENT_FILE" ]]; then
     source "$IDENT_FILE"
     [[ -z "$UUID"    ]] && UUID="${NODE_UUID:-${UUID:-}}"
     [[ -z "$WS_PATH" ]] && WS_PATH="${NODE_PATH:-${WS_PATH:-}}"
+    [[ $PORT_SET -eq 0 && -n "${NODE_PORT:-}" ]] && PORT="$NODE_PORT"
 fi
 [[ -n "$UUID" ]] || UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || python3 -c 'import uuid;print(uuid.uuid4())')
 [[ -n "$WS_PATH" ]] || WS_PATH="/dl-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 WS_PATH="/${WS_PATH#/}"
-printf 'NODE_UUID=%s\nNODE_PATH=%s\n' "$UUID" "$WS_PATH" > "$IDENT_FILE"
+printf 'NODE_UUID=%s\nNODE_PATH=%s\nNODE_PORT=%s\n' "$UUID" "$WS_PATH" "$PORT" > "$IDENT_FILE"
 chmod 600 "$IDENT_FILE"
 
 cat > "$SRV_CFG" <<EOF
@@ -206,8 +215,16 @@ if [[ $TUNNEL -eq 1 ]]; then
         printf 'TUNNEL_TOKEN=%s\nTUNNEL_HOST=%s\n' "$TUNNEL_TOKEN" "$TUNNEL_HOST" > "$TUNNEL_ENV"
         chmod 600 "$TUNNEL_ENV"
         host="$TUNNEL_HOST"
-        sleep 3
-        if grep -qiE 'Registered tunnel connection|Connection registered' "$CF_LOG"; then
+        # 命名隧道的连接器注册需要几秒到几十秒，先等它注册成功再做自检
+        echo -n "[+] 等待命名隧道连接"
+        registered=0
+        for _ in $(seq 1 40); do
+            grep -qiE 'Registered tunnel connection' "$CF_LOG" && { registered=1; break; }
+            grep -qiE 'token is not valid|invalid token|Unauthorized' "$CF_LOG" && break
+            echo -n "."; sleep 1
+        done
+        echo
+        if [[ $registered -eq 1 ]]; then
             echo "[+] 命名隧道已连接"
         elif grep -qiE 'token is not valid|invalid token|Unauthorized|failed to (parse|connect)' "$CF_LOG"; then
             echo "[!] 命名隧道连接失败（token 无效或后台未配置该域名）：" >&2
@@ -277,10 +294,15 @@ if [[ -n "$HOST_ADDR" ]]; then
     [[ -n "$IP" ]] && RESOLVE_ARG=(--resolve "${HOST_ADDR}:443:${IP}")
     # 注意: set -o pipefail 下 curl 会因 -m 超时返回非 0（连接保持不断，属正常），
     # 所以先抓取响应头再判断，而不是直接用管道退出码。
-    RESP=$(curl -sS -i -m 10 --http1.1 ${RESOLVE_ARG[@]+"${RESOLVE_ARG[@]}"} \
-        -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
-        -H 'Sec-WebSocket-Version: 13' -H "Sec-WebSocket-Key: $KEY" \
-        "https://${HOST_ADDR}${WS_PATH}" 2>/dev/null | head -3)
+    RESP=""
+    for _try in 1 2 3; do   # 刚连上隧道时可能有一两秒窗口，重试 3 次避免误报
+        RESP=$(curl -sS -i -m 10 --http1.1 ${RESOLVE_ARG[@]+"${RESOLVE_ARG[@]}"} \
+            -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+            -H 'Sec-WebSocket-Version: 13' -H "Sec-WebSocket-Key: $KEY" \
+            "https://${HOST_ADDR}${WS_PATH}" 2>/dev/null | head -3)
+        echo "$RESP" | grep -q ' 101' && break
+        sleep 2
+    done
     if echo "$RESP" | grep -q ' 101'; then
         CHECK="101 Switching Protocols（隧道 → 节点 正常）"
     else

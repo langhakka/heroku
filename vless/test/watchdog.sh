@@ -144,20 +144,26 @@ handshake_ok() {
 
 loop() {
     log "[start] 守护启动 pid=$$ interval=${INTERVAL}s"
-    local round=0
+    local round=0 fails=0
     while true; do
         alive "$SRV_PID" || start_server
         alive "$CF_PID"  || start_tunnel
         round=$((round+1))
         if (( round % CHECK_EVERY == 0 )) && alive "$CF_PID"; then
             if handshake_ok; then
-                : # 正常，不刷日志
+                (( fails > 0 )) && log "[ok] 自检恢复正常"
+                fails=0
             else
-                log "[warn] 101 自检失败，重建隧道"
-                local old; old=$(pid_of "$CF_PID")
-                [[ -n "$old" ]] && kill "$old" 2>/dev/null
-                rm -f "$CF_PID"; sleep 2
-                start_tunnel
+                fails=$((fails+1))
+                log "[warn] 101 自检失败（连续 $fails 次）"
+                if (( fails >= 3 )); then   # 连续 3 次才重建，避免抖动导致域名无谓变动
+                    log "[warn] 连续失败，重建隧道"
+                    local old; old=$(pid_of "$CF_PID")
+                    [[ -n "$old" ]] && kill "$old" 2>/dev/null
+                    rm -f "$CF_PID"; sleep 2
+                    start_tunnel
+                    fails=0
+                fi
             fi
         fi
         sleep "$INTERVAL"
