@@ -26,6 +26,7 @@ CF_LOG="$STATE_DIR/cloudflared.log"
 HOST_FILE="$STATE_DIR/host.txt"
 IP_FILE="$STATE_DIR/ip.txt"
 LINK_FILE="$STATE_DIR/link.txt"
+TUNNEL_ENV="$STATE_DIR/tunnel.env"
 WD_PID="$STATE_DIR/watchdog.pid"
 LOG="$STATE_DIR/watchdog.log"
 INTERVAL="${WATCH_INTERVAL:-15}"        # 检查间隔（秒）
@@ -88,25 +89,39 @@ start_server() {
 }
 
 start_tunnel() {
-    log "[restart] cloudflared 未运行，重建隧道（域名会变）"
-    local port
-    port=$(python3 -c "import json,sys;print(json.load(open('$SRV_CFG'))['inbounds'][0]['port'])")
-    : > "$CF_LOG"   # 清空旧日志，否则会 grep 到上一次的域名（quick tunnel 每次域名都不同）
-    nohup "$CF_BIN" tunnel --no-autoupdate --protocol http2 --url "http://127.0.0.1:${port}" >>"$CF_LOG" 2>&1 &
-    echo $! > "$CF_PID"
-    local host=""
-    for _ in $(seq 1 60); do
-        host=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$CF_LOG" 2>/dev/null | tail -1 | sed 's#https://##')
-        [[ -n "$host" ]] && break
-        sleep 1
-    done
+    local port host=""
+    port=$(python3 -c "import json;print(json.load(open('$SRV_CFG'))['inbounds'][0]['port'])")
+    : > "$CF_LOG"   # 清空旧日志，否则会 grep 到上一次的随机域名（quick tunnel 每次都不同）
+    if [[ -f "$TUNNEL_ENV" ]]; then
+        # 命名隧道：域名固定，重启只是重连，链接里的域名不变
+        local TUNNEL_TOKEN="" TUNNEL_HOST=""
+        # shellcheck disable=SC1090
+        source "$TUNNEL_ENV"
+        log "[restart] 命名隧道未运行，重连中（域名固定: ${TUNNEL_HOST}）"
+        nohup "$CF_BIN" tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" >>"$CF_LOG" 2>&1 &
+        echo $! > "$CF_PID"
+        for _ in $(seq 1 40); do
+            grep -qiE 'Registered tunnel connection' "$CF_LOG" && break
+            sleep 1
+        done
+        host="$TUNNEL_HOST"
+    else
+        log "[restart] cloudflared 未运行，重建 quick tunnel（域名会变）"
+        nohup "$CF_BIN" tunnel --no-autoupdate --protocol http2 --url "http://127.0.0.1:${port}" >>"$CF_LOG" 2>&1 &
+        echo $! > "$CF_PID"
+        for _ in $(seq 1 60); do
+            host=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$CF_LOG" 2>/dev/null | tail -1 | sed 's#https://##')
+            [[ -n "$host" ]] && break
+            sleep 1
+        done
+    fi
     if [[ -z "$host" ]]; then log "[fail] 隧道重建失败，稍后重试"; return 1; fi
     echo "$host" > "$HOST_FILE"
     local ip=""
     for _ in $(seq 1 60); do ip=$(doh_ip "$host"); [[ -n "$ip" ]] && break; sleep 1; done
     [[ -n "$ip" ]] && echo "$ip" > "$IP_FILE"
     gen_link "$host" > "$LINK_FILE"
-    log "[ok] 隧道已重建: $host (ip=${ip:-未知})，链接已更新"
+    log "[ok] 隧道已恢复: $host (ip=${ip:-未知})，链接已更新"
     log "LINK $(cat "$LINK_FILE")"
 }
 

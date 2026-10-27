@@ -23,12 +23,17 @@ CF_PID="$STATE_DIR/cloudflared.pid"
 LINK_FILE="$STATE_DIR/link.txt"
 HOST_FILE="$STATE_DIR/host.txt"
 
+IDENT_FILE="$STATE_DIR/identity.env"   # 固定 UUID / WS 路径，重启后复用
+TUNNEL_ENV="$STATE_DIR/tunnel.env"     # 命名隧道（固定域名）的参数
 PORT=18308
 WS_PATH=""
 UUID=""
 ACTION=start
 TUNNEL=1
 WATCH=1
+NEW_IDENT=0
+TUNNEL_TOKEN="${TUNNEL_TOKEN:-}"
+TUNNEL_HOST="${TUNNEL_HOST:-}"
 
 usage() {
     cat <<'USAGE'
@@ -36,7 +41,10 @@ usage() {
 
       --port <端口>   节点监听端口, 默认 18308
       --path <路径>   WS 路径, 默认随机
-      --uuid <UUID>   UUID, 默认随机
+      --uuid <UUID>   UUID, 默认复用上次的（没有则随机）
+      --new           强制换一套新的 UUID + 路径
+      --tunnel-token <token>   用 Cloudflare 命名隧道（固定域名），需配合 --tunnel-host
+      --tunnel-host <域名>     命名隧道对应的公网域名（CF 后台已配好指向该隧道）
       --no-tunnel     只起本地节点, 不开 Cloudflare 隧道
       --no-watch      不起守护进程（默认会起，掉线自动拉起）
       --status        查看状态 + 当前链接
@@ -52,6 +60,9 @@ while [[ $# -gt 0 ]]; do
         --uuid) UUID="$2"; shift 2 ;;
         --no-tunnel) TUNNEL=0; shift ;;
         --no-watch) WATCH=0; shift ;;
+        --new) NEW_IDENT=1; shift ;;
+        --tunnel-token) TUNNEL_TOKEN="$2"; shift 2 ;;
+        --tunnel-host) TUNNEL_HOST="$2"; shift 2 ;;
         --status) ACTION=status; shift ;;
         --stop) ACTION=stop; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -97,6 +108,12 @@ status_all() {
     [[ -f "$LINK_FILE" ]] && { echo; echo "当前链接:"; cat "$LINK_FILE"; }
 }
 
+# 命名隧道必须同时给域名，否则会拉起一个没有域名的连接（在停掉现有节点之前就拦掉）
+if [[ -n "$TUNNEL_TOKEN" && -z "$TUNNEL_HOST" ]]; then
+    echo "错误: 用了 --tunnel-token 必须同时指定 --tunnel-host（CF 后台已路由到该隧道的域名）" >&2
+    exit 1
+fi
+
 [[ "$ACTION" == "stop" ]] && { stop_all; exit 0; }
 [[ "$ACTION" == "status" ]] && { status_all; exit 0; }
 
@@ -131,9 +148,19 @@ command -v python3 >/dev/null || { echo "需要 python3" >&2; exit 1; }
 
 # ---- 启动节点 ---------------------------------------------------------------
 stop_all
+# 固定身份：重启后沿用同一 UUID / 路径，客户端配置就不用改了（--new 可强制换）
+if [[ $NEW_IDENT -eq 0 && -f "$IDENT_FILE" ]]; then
+    NODE_UUID=""; NODE_PATH=""
+    # shellcheck disable=SC1090
+    source "$IDENT_FILE"
+    [[ -z "$UUID"    ]] && UUID="${NODE_UUID:-${UUID:-}}"
+    [[ -z "$WS_PATH" ]] && WS_PATH="${NODE_PATH:-${WS_PATH:-}}"
+fi
 [[ -n "$UUID" ]] || UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || python3 -c 'import uuid;print(uuid.uuid4())')
 [[ -n "$WS_PATH" ]] || WS_PATH="/dl-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 WS_PATH="/${WS_PATH#/}"
+printf 'NODE_UUID=%s\nNODE_PATH=%s\n' "$UUID" "$WS_PATH" > "$IDENT_FILE"
+chmod 600 "$IDENT_FILE"
 
 cat > "$SRV_CFG" <<EOF
 {
@@ -166,15 +193,43 @@ is_running "$SRV_PID" || { echo "节点启动失败:" >&2; tail -5 "$SRV_LOG" >&
 ADDR="127.0.0.1"
 TLS_FLAG=()
 if [[ $TUNNEL -eq 1 ]]; then
-    echo "[+] 建立 Cloudflare 临时隧道 (http2) ..."
-    nohup "$CF_BIN" tunnel --no-autoupdate --protocol http2 --url "http://127.0.0.1:${PORT}" > "$CF_LOG" 2>&1 &
-    echo $! > "$CF_PID"
     host=""
-    for _ in $(seq 1 40); do
-        host=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$CF_LOG" 2>/dev/null | head -1 | sed 's#https://##')
-        [[ -n "$host" ]] && break
-        sleep 1
-    done
+    if [[ -n "$TUNNEL_TOKEN" ]]; then
+        # 命名隧道: 域名固定（CF 后台已把该域名路由到这条隧道），不用再等随机域名
+        if [[ -z "$TUNNEL_HOST" ]]; then
+            echo "[!] 用了 --tunnel-token 就必须同时给 --tunnel-host" >&2; exit 1
+        fi
+        echo "[+] 使用 Cloudflare 命名隧道（固定域名 $TUNNEL_HOST）..."
+        : > "$CF_LOG"
+        nohup "$CF_BIN" tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" > "$CF_LOG" 2>&1 &
+        echo $! > "$CF_PID"
+        printf 'TUNNEL_TOKEN=%s\nTUNNEL_HOST=%s\n' "$TUNNEL_TOKEN" "$TUNNEL_HOST" > "$TUNNEL_ENV"
+        chmod 600 "$TUNNEL_ENV"
+        host="$TUNNEL_HOST"
+        sleep 3
+        if grep -qiE 'Registered tunnel connection|Connection registered' "$CF_LOG"; then
+            echo "[+] 命名隧道已连接"
+        elif grep -qiE 'token is not valid|invalid token|Unauthorized|failed to (parse|connect)' "$CF_LOG"; then
+            echo "[!] 命名隧道连接失败（token 无效或后台未配置该域名）：" >&2
+            grep -iE 'not valid|Unauthorized|invalid' "$CF_LOG" | head -2 >&2
+            kill "$(cat "$CF_PID")" 2>/dev/null; rm -f "$CF_PID" "$TUNNEL_ENV"
+            host=""
+            echo "[!] 已退回：只启动本地节点（未开隧道）" >&2
+        else
+            echo "[!] 命名隧道尚未确认连接，日志: $CF_LOG" >&2
+        fi
+    else
+        echo "[+] 建立 Cloudflare 临时隧道 (http2) ..."
+        : > "$CF_LOG"
+        nohup "$CF_BIN" tunnel --no-autoupdate --protocol http2 --url "http://127.0.0.1:${PORT}" > "$CF_LOG" 2>&1 &
+        echo $! > "$CF_PID"
+        for _ in $(seq 1 40); do
+            host=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$CF_LOG" 2>/dev/null | head -1 | sed 's#https://##')
+            [[ -n "$host" ]] && break
+            sleep 1
+        done
+        rm -f "$TUNNEL_ENV"
+    fi
     if [[ -z "$host" ]]; then
         echo "[!] 隧道建不起来（可能网络限制），只保留本地节点" >&2
         kill "$(cat "$CF_PID")" 2>/dev/null; rm -f "$CF_PID"

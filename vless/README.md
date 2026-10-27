@@ -151,6 +151,41 @@ bash test/demo-node.sh --stop     # 全部停掉
 3. **链接按客户端视角生成**：走隧道时端口填 443、`security=tls`（TLS 由 Cloudflare 边缘提供），源站保持明文 WS，不依赖任何证书。
 
 > 域名每次重启都变、进程随机器销毁消失 —— 只适合临时验证，长期用 `deploy.sh`。
+## 固定 UUID / 固定域名（想让客户端配置一次就不用再改）
+
+### 1. 固定 UUID 与 WS 路径（已内置）
+
+`demo-node.sh` 会把 UUID 和路径写进 `.cache/vless-demo/identity.env`，下次启动直接复用：
+
+```bash
+bash test/demo-node.sh            # 第二次启动 UUID/路径不变，只有隧道域名可能变
+bash test/demo-node.sh --new      # 想换一套新的再换
+```
+
+实测：连续两次启动，UUID 与路径完全一致，只有 quick tunnel 的域名不同。
+
+### 2. 固定域名：改用 Cloudflare 命名隧道
+
+quick tunnel 的域名每次重连都变。命名隧道（named tunnel）可以把**你自己的域名**固定指向这台机器上的节点：
+
+```bash
+# Cloudflare 侧一次性配置（需要账号 + 托管在 CF 的域名）：
+#   cloudflared tunnel login
+#   cloudflared tunnel create vless-node          # 拿到 token
+#   cloudflared tunnel route dns vless-node node.example.com
+bash test/demo-node.sh \
+  --tunnel-token "<TUNNEL_TOKEN>" \
+  --tunnel-host  node.example.com
+```
+
+脚本会把 token/域名记到 `.cache/vless-demo/tunnel.env`（600 权限），watchdog 重连时也用命名隧道，**域名不会再变**。token 无效时会明确报错并退回"只起本地节点"，不会给你一条连不上的链接。
+
+### 3. 但要说清楚：固定域名 ≠ 自启
+
+固定域名解决的是"客户端配置不用改"，**不解决进程随容器消失**。要做到"机器重启也自动回来"，仍然需要 systemd（真 VPS 上 `deploy.sh` 就是），容器里没有 systemd/cron。
+
+> 另外提醒：Cloudflare 的服务条款不允许把 Tunnel/CDN 当通用代理长期跑流量，账号有被处理的风险；自建 VPS 直连没有这个顾虑。
+
 ## 掉线自动拉起（watchdog）
 
 ```bash
