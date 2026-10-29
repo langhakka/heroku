@@ -222,3 +222,50 @@ path 是 **/ws**
 别人的配置教程参考，https://v2raytech.com/v2rayn-config-tutorial/.
 
 ![v2rayN](/readme-data/V2rayN.jpg)
+
+## 自建 VPS 的 VLESS 节点（独立方案）
+
+不想用 Heroku、只想在自己的 VPS 上开一个节点？见 [vless/README.md](./vless/README.md)。
+
+```bash
+sudo bash vless/deploy.sh --domain node.example.com --email you@example.com
+```
+
+脚本会自动安装 Xray-core、生成 UUID 和随机 WS 路径、签发 Let's Encrypt 证书、配置 systemd 开机自启，并直接打印可导入客户端的 `vless://` 链接；支持 `--ws` 模式（套 Cloudflare CDN）和 `--print-only`（只在本地打印配置，不动系统）。
+
+协议只用 **VLESS + WebSocket + TLS**：VMess 的请求头里带「加密方式」字段，客户端填错或丢失时服务端只能拒绝（`unknown security type: UNKNOWN`），表现是"能连上但流量全废"，VLESS 没有这个字段，少一类坑。
+
+## 容器内临时节点（掉线/重建后一键恢复）
+
+沙箱或临时机器（没有 systemd）里想马上拿到一条「手机能连」的链路，用这个：
+
+```bash
+bash vless/test/demo-node.sh            # 起节点 + Cloudflare 临时隧道，打印 vless:// 链接
+bash vless/test/demo-node.sh --status   # 看进程/域名/当前链接
+bash vless/test/demo-node.sh --stop     # 全停
+```
+
+恢复（容器被重建、进程全没了）就再跑一次同一条命令：
+
+```bash
+bash vless/test/demo-node.sh            # 沿用 .cache 里的 UUID/路径，重新拉隧道
+```
+
+行为说明：
+
+| 情况 | 结果 |
+| --- | --- |
+| 进程还在，只是掉线 | 守护进程（默认自动启动）15 秒内拉起，域名/链接不变 |
+| 容器被重建（`.cache` 丢失） | 无参重跑 = 新 UUID + 新路径 + 新 `trycloudflare.com` 域名，旧客户端配置需重新导入 |
+| 想恢复成和以前一模一样 | 把 UUID/路径/端口 + 命名隧道 token 存到容器外，重跑时喂回去：`bash vless/test/demo-node.sh --port 8001 --uuid <原UUID> --path <原路径> --tunnel-token <CF token> --tunnel-host <固定域名>` |
+
+守护进程（xray 挂了自动拉起、隧道坏了自动重建并重写链接）：
+
+```bash
+bash vless/test/watchdog.sh start      # 后台守护（demo-node.sh 默认已帮你起好）
+bash vless/test/watchdog.sh status     # 守护/节点/隧道 + 101 自检 + 当前链接
+bash vless/test/watchdog.sh stop --all
+```
+
+自检状态含义：`101 Switching Protocols` = Cloudflare 边缘 → 节点的 WebSocket 升级正常；WS 路径就是凭据之一，路径不对会直接 502/404。
+

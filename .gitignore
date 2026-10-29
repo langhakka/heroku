@@ -102,3 +102,6 @@ dist
 
 # TernJS port file
 .tern-port
+
+# 临时节点状态目录（xray/cloudflared 二进制、pid、链接等，不入库）
+.cache/

@@ -1,0 +1,47 @@
+{
+  "_comment": [
+    "客户端 JSON 配置样例（V2Ray / Xray 内核通用，可整段粘到客户端配置的 outbounds 里）",
+    "协议是 VLESS：注意没有 alterId、没有加密方式(security/cipher)这两项，只有 encryption=none",
+    "占位符：YOUR_UUID / node.example.com / /vless-xxxxxxxx",
+    "tls 直连：security = tls，port = 443",
+    "套 Cloudflare CDN：security = tls，port = 443，address/Host/serverName 都填 CDN 域名",
+    "本地/反代调试：security = none，port = 8080（Xray 26 只允许私有地址上 VLESS 不加密）"
+  ],
+  "outbounds": [
+    {
+      "tag": "vless-node",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "node.example.com",
+            "port": 443,
+            "users": [
+              {
+                "id": "YOUR_UUID",
+                "encryption": "none",
+                "flow": ""
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "/vless-xxxxxxxx",
+          "headers": {
+            "Host": "node.example.com"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "node.example.com",
+          "alpn": [
+            "http/1.1"
+          ]
+        }
+      }
+    }
+  ]
+}
