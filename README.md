@@ -240,15 +240,31 @@ sudo bash vless/deploy.sh --domain node.example.com --email you@example.com
 沙箱或临时机器（没有 systemd）里想马上拿到一条「手机能连」的链路，用这个：
 
 ```bash
-bash vless/test/demo-node.sh            # 起节点 + Cloudflare 临时隧道，打印 vless:// 链接
-bash vless/test/demo-node.sh --status   # 看进程/域名/当前链接
-bash vless/test/demo-node.sh --stop     # 全停
+bash vless/test/restore-node.sh          # 一条命令恢复到可用状态（幂等，开着重跑也只打印链接）
+bash vless/test/restore-node.sh --status # 只看状态 + 当前链接
+bash vless/test/demo-node.sh --stop      # 全停（节点 + 隧道 + 守护）
 ```
+
+`restore-node.sh` 会按代价从低到高自己选恢复方式：
+
+| 情况 | 行为 | 链接变化 |
+| --- | --- | --- |
+| 进程都还在 | 只做 101 自检，打印当前链接 | 不变 |
+| 进程没了但 `.cache` 还在 | 用现有 `server.json` 原样拉起（UUID/WS 路径不变） | 域名可能变 |
+| 隧道半死 / 域名被回收 | 重建 quick tunnel 并重写链接 | 域名变 |
+| `.cache` 丢了（容器重建） | 转给 `demo-node.sh` 重新初始化 | UUID + 域名都变 |
 
 恢复（容器被重建、进程全没了）就再跑一次同一条命令：
 
 ```bash
-bash vless/test/demo-node.sh            # 沿用 .cache 里的 UUID/路径，重新拉隧道
+bash vless/test/restore-node.sh
+```
+
+第一次部署 / 想换一套新身份时才直接用 `demo-node.sh`：
+
+```bash
+bash vless/test/demo-node.sh            # 起节点 + Cloudflare 临时隧道，打印 vless:// 链接
+bash vless/test/demo-node.sh --new      # 强制换新的 UUID + 路径
 ```
 
 行为说明：
