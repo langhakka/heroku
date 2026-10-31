@@ -226,6 +226,43 @@ token 位置：Cloudflare Dashboard → Zero Trust → Networks → Tunnels → 
 
 也就是说：**UUID/路径/端口 + 隧道 token 要自己留一份在容器外**（密码管理器 / GitHub Secrets），仓库里只放脚本。实测一次容器重建后的恢复：新起节点拿到 `127.0.0.1:8001` + 新 UUID/路径 + 新 quick tunnel 域名，101 自检通过，客户端 SOCKS → VLESS/WS/TLS → 隧道 → 出网正常（`curl --socks5-hostname ... https://api.ipify.org` 返回出口 IP），只是链接要重新导入客户端。
 
+#### 一条命令自动恢复（`test/bootstrap.sh`）
+
+上面那套"重新喂参数"太啰嗦，所以有了幂等引导脚本，**不用记任何参数**：
+
+```bash
+bash test/bootstrap.sh            # 不健康就按记忆恢复，健康则直接退出（0）
+bash test/bootstrap.sh --check    # 只体检：健康 exit 0 / 不健康 exit 2（给监控、定时任务用）
+bash test/bootstrap.sh --force    # 强制重建
+bash test/bootstrap.sh --export   # 打印 env 片段，方便存进 Secrets / 平台环境变量
+```
+
+它是怎么"记住"的：
+
+1. 每次恢复成功（或体检通过）后，把 `token / 域名 / UUID / 路径 / 端口` 同步到 **`$HOME/.config/vless-node/state.env`**（`600`，在工作目录之外，`git clean` 也删不掉）；
+2. 下次启动按 `命令行 > token 文件 > 环境变量 > .cache 状态目录 > 备份目录` 的顺序取值，所以 `.cache` 被清空也能恢复成"完全一样"的节点；
+3. 恢复后**再验一次 101**，不通过就 `exit 1`（不会假装成功）。
+
+实测（模拟最坏情况）：停掉全部进程 → `rm -rf .cache/vless-demo`（只剩二进制）→ 在**无参数、无环境变量**下执行 `bash test/bootstrap.sh` →
+
+```
+[+] 按记忆恢复：port=8001 uuid=f5de15ca-… path=/dl-e510ac5a host=aida.adg007.kdns.fr
+[+] 命名隧道已连接
+握手自检 : 101 Switching Protocols（隧道 → 节点 正常）
+[ok] 恢复完成，身份已备份到 /home/node/.config/vless-node/state.env
+```
+
+> ⚠️ 备份目录也在容器里。**换 pod（/workspace 重新克隆）时它同样会丢**，那种情况下必须由容器外提供 token：
+> `TUNNEL_TOKEN=... TUNNEL_HOST=aida.adg007.kdns.fr bash test/bootstrap.sh`
+> （或 `--token-file /path/token.txt`）。把 `--export` 的输出存进 GitHub Secrets / 密码管理器即可。
+
+#### 让它真正无人值守
+
+容器里没有 systemd/cron，进程和守护都会随容器消失，所以"自动"依赖外部触发。两种做法：
+
+1. **平台/CI 触发**：容器启动脚本里加一行 `bash vless/test/bootstrap.sh -q`（token 从 Secrets 注入）；
+2. **定时自愈**：用调度器每隔一段时间跑 `bash /workspace/vless/test/bootstrap.sh --check || bash /workspace/vless/test/bootstrap.sh -q`，节点挂了/容器重启后会在下一轮自动拉回来，健康时几乎零开销。
+
 ### 3. 但要说清楚：固定域名 ≠ 自启
 
 固定域名解决的是"客户端配置不用改"，**不解决进程随容器消失**。要做到"机器重启也自动回来"，仍然需要 systemd（真 VPS 上 `deploy.sh` 就是），容器里没有 systemd/cron。
