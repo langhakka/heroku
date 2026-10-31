@@ -46,6 +46,27 @@ alive() { # 注意: 僵尸进程(DEFUNCT)的 kill -0 也返回成功, 必须看 
     return 0
 }
 
+# 这个容器的 PID 1 是平台进程（不回收子进程），我们自己回收，否则每次重启
+# xray/cloudflared 都会留下一个 <defunct>，越堆越多。
+reap() {
+    local p st
+    for p in $(jobs -p 2>/dev/null); do
+        st=$(awk '{print $3}' "/proc/$p/stat" 2>/dev/null)
+        [[ "$st" == "Z" ]] && wait "$p" 2>/dev/null
+    done
+}
+
+# 日志轮转：这些日志都是 O_APPEND 打开，截断后下一次写会回到文件头，安全
+rotate() {
+    local f="$1" max="${2:-1048576}" sz=0
+    [[ -f "$f" ]] || return 0
+    sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    if (( sz > max )); then
+        : > "$f"
+        log "[rotate] $(basename "$f") 超过 $((max / 1024))KB，已截断"
+    fi
+}
+
 doh_ip() {
     curl -sS -m 8 -H 'accept: application/dns-json' \
         "https://cloudflare-dns.com/dns-query?name=$1&type=A" 2>/dev/null \
@@ -98,7 +119,8 @@ start_tunnel() {
         # shellcheck disable=SC1090
         source "$TUNNEL_ENV"
         log "[restart] 命名隧道未运行，重连中（域名固定: ${TUNNEL_HOST}）"
-        nohup "$CF_BIN" tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" >>"$CF_LOG" 2>&1 &
+        # token 走环境变量而不是 --token：argv 会被 ps 看到，env 只有同用户能读
+        TUNNEL_TOKEN="$TUNNEL_TOKEN" nohup "$CF_BIN" tunnel --no-autoupdate run >>"$CF_LOG" 2>&1 &
         echo $! > "$CF_PID"
         for _ in $(seq 1 40); do
             grep -qiE 'Registered tunnel connection' "$CF_LOG" && break
@@ -146,9 +168,15 @@ loop() {
     log "[start] 守护启动 pid=$$ interval=${INTERVAL}s"
     local round=0 fails=0
     while true; do
+        reap                                   # 回收已退出的子进程，别让僵尸堆积
         alive "$SRV_PID" || start_server
         alive "$CF_PID"  || start_tunnel
         round=$((round+1))
+        if (( round % 40 == 0 )); then          # 约 10 分钟轮转一次超限日志
+            rotate "$CF_LOG" 1048576
+            rotate "$STATE_DIR/server.log" 1048576
+            rotate "$LOG" 524288
+        fi
         if (( round % CHECK_EVERY == 0 )) && alive "$CF_PID"; then
             if handshake_ok; then
                 (( fails > 0 )) && log "[ok] 自检恢复正常"

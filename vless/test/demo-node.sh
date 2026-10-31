@@ -224,7 +224,8 @@ if [[ $TUNNEL -eq 1 ]]; then
         fi
         echo "[+] 使用 Cloudflare 命名隧道（固定域名 $TUNNEL_HOST）..."
         : > "$CF_LOG"
-        nohup "$CF_BIN" tunnel --no-autoupdate run --token "$TUNNEL_TOKEN" > "$CF_LOG" 2>&1 &
+        # token 走环境变量而不是 --token：argv 会被 ps 看到
+        TUNNEL_TOKEN="$TUNNEL_TOKEN" nohup "$CF_BIN" tunnel --no-autoupdate run > "$CF_LOG" 2>&1 &
         echo $! > "$CF_PID"
         printf 'TUNNEL_TOKEN=%s\nTUNNEL_HOST=%s\n' "$TUNNEL_TOKEN" "$TUNNEL_HOST" > "$TUNNEL_ENV"
         chmod 600 "$TUNNEL_ENV"

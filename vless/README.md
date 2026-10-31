@@ -269,30 +269,40 @@ bash test/bootstrap.sh --export   # 打印 env 片段，方便存进 Secrets / �
 
 > 另外提醒：Cloudflare 的服务条款不允许把 Tunnel/CDN 当通用代理长期跑流量，账号有被处理的风险；自建 VPS 直连没有这个顾虑。
 
-## 掉线自动拉起（watchdog）
+## 保活（Keep-alive）：三级链 + 容器外触发
+
+节点的死法有很多种，所以是分层的，**每一层只负责它能负责的那种**：
+
+| 层级 | 进程/机制 | 覆盖的故障 | 实测恢复时间 |
+| --- | --- | --- | --- |
+| L1 | `cloudflared`（命名隧道，多连接器） | 单条边缘连接断开 | 秒级（CF 自己重连） |
+| L2 | `watchdog.sh`（15s 轮询） | xray 挂 / cloudflared 挂 / 隧道在但 101 握手坏 | xray ~1s；隧道 ≤ 20s |
+| L3 | `supervise.sh`（30s 轮询） | **watchdog 自己被 kill/OOM/抛错** | 实测 14s（17:39:04 杀 → 17:39:18 检出 → 17:39:20 恢复） |
+| L4 | `bootstrap.sh` + 定时任务（每小时）/ 平台 entrypoint | **整个容器重启、所有进程消失** | 走到下一轮触发（≤1h，或手动一条命令 ~40s） |
 
 ```bash
-bash test/watchdog.sh start     # 后台守护（demo-node.sh 默认已经帮你起好）
-bash test/watchdog.sh status    # 守护/节点/隧道状态 + 当前链接 + 最近事件
-bash test/watchdog.sh stop --all
+bash test/supervise.sh start     # 最外层守护（bootstrap 会顺手拉起，幂等）
+bash test/supervise.sh status    # 三级状态一览
+bash test/supervise.sh stop --all
 ```
 
-每 15 秒检查一次，能覆盖这些情况（都实测过）：
+L2 的细节（都实测过）：每 15 秒检查，xray 挂了用现有 `server.json` 重启（域名/链接不变）；cloudflared 挂了重建隧道；每 5 分钟做一次 101 自检，连续 3 次失败才重建（避免抖动导致域名无谓变动）。
 
-| 情况 | 守护行为 | 实测恢复时间 |
-| --- | --- | --- |
-| xray 进程挂了 | 用现有 `server.json` 重启，域名/链接不变 | ~1 秒 |
-| cloudflared 挂了 | 重建 quick tunnel，**域名会变**，自动重写 `.cache/vless-demo/link.txt` | ~20 秒 |
-| 隧道活着但握手坏了（每 5 分钟一次 101 自检） | 杀掉重建隧道并更新链接 | ≤ 20 秒 |
+保活过程中踩到并修掉的三个坑：
 
-写这个守护时踩到两个坑，都已修（留给以后参考）：
+1. **僵尸进程骗过存活检查**：`kill -0 <pid>` 对 defunct 进程也返回成功，必须再看 `/proc/<pid>/stat` 的状态位是不是 `Z`；
+2. **僵尸会无限堆积**：这个容器的 PID 1 是平台自己的进程，**不回收子进程**——每次重启 xray/cloudflared 都会留一个 `<defunct>`。现在 watchdog 每轮用 `wait` 回收自己拉起的子进程（实测：杀 xray → 新 pid、僵尸数 31→31 不增长）。注意：`demo-node.sh` 直接拉起的那一对进程退出后归 PID 1，无法回收（数量级 = 每次 bootstrap 一个，可忽略）；
+3. **token 会从 `ps` 泄露**：以前用 `cloudflared tunnel run --token xxx`，`ps -eo args` 一眼就能看到。现在改为 `TUNNEL_TOKEN=... cloudflared tunnel run`（cloudflared 原生支持环境变量，日志里还会自动打码），已实测 `ps` 中不再出现 token。
 
-1. **僵尸进程骗过存活检查**：`kill -0 <pid>` 对 defunct 进程也返回成功，必须再看 `/proc/<pid>/stat` 的状态位是不是 `Z`，否则守护以为节点还活着、永远不重启；
-2. **旧日志污染新域名**：cloudflared 日志是追加写，grep 到的是上一次的域名，导致新隧道配了旧域名。重建前必须先把日志清空。
+另外日志会轮转（cloudflared/server/watchdog 超过 1MB 截断），避免长期跑把磁盘写满。
 
-**它管不到的情况**：整个容器被重建（`/tmp` 清空、所有进程消失、uptime 归零）。容器里没有 systemd/cron（PID 1 是平台自己的进程），守护进程会一起消失，没有任何容器内自启手段。这种只能靠：新会话里跑一次 `bash test/watchdog.sh start`（或 `demo-node.sh`），或者用真 VPS。
+**L4 之外还有一层：容器本身**。如果沙箱被销毁（不是重启，是直接回收），那么进程、`.cache`、`$HOME` 备份全都没了，任何容器内手段都无效。这种只能靠外部：容器编排的启动命令里加 `bash vless/test/bootstrap.sh -q`（token 由 Secrets 注入），或者干脆上真 VPS（`deploy.sh` + systemd，开机自启、`Restart=always`），这才是真正的 24/7。
 
-> **状态目录为什么不在 /tmp**：`/tmp` 会被环境清理（我实测过一次容器重启后 `/tmp` 全空、节点进程全没了），所以两个测试脚本把二进制和配置放在仓库下的 `.cache/`（已在 `.gitignore` 里），重启后不必重新下载，恢复只需再跑一次 `bash test/demo-node.sh`。
+> ⚠️ 两个要记住的外部约束：
+> 1. **Cloudflare 服务条款不允许把 Tunnel 当通用代理长期跑流量**，账号有被处理的风险；自己 VPS + Reality/TLS 直连没有这个问题。
+> 2. 免费/临时隧道没有可用性承诺（quick tunnel 的提示里写得很清楚），固定域名请用**命名隧道**。
+
+> **状态目录为什么不在 /tmp**：`/tmp` 会被环境清理（实测过一次容器重启后 `/tmp` 全空、节点进程全没），所以脚本把二进制与配置放在仓库下的 `.cache/`（已 gitignore），重启后不必重新下载，恢复只需 `bash test/bootstrap.sh`。
 
 
 

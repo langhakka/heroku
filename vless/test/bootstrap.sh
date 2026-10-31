@@ -131,6 +131,16 @@ save_backup() {
     ) && chmod 600 "$BACKUP_ENV"
 }
 
+# 启动最外层保活（supervisor → watchdog → 节点）；幂等，已在跑就跳过
+ensure_supervisor() {
+    [[ -f "$HERE/test/supervise.sh" ]] || return 0
+    if [[ $QUIET -eq 1 ]]; then
+        bash "$HERE/test/supervise.sh" start >/dev/null 2>&1 || true
+    else
+        bash "$HERE/test/supervise.sh" start 2>/dev/null || true
+    fi
+}
+
 # ---------- 收集各处记忆的参数 ------------------------------------------------
 ST_UUID=""; ST_PATH=""; ST_PORT=""; ST_TOKEN=""; ST_HOST=""
 BK_TOKEN=""; BK_HOST=""; BK_UUID=""; BK_PATH=""; BK_PORT=""
@@ -192,6 +202,7 @@ if healthy; then
     fi
     if [[ $FORCE -eq 0 ]]; then
         save_backup && say "[ok] 身份已同步到备份 $BACKUP_ENV"
+        ensure_supervisor
         say "[ok] 节点已在线，无需重建：$(link_host)"
         [[ -f "$LINK_FILE" ]] && say "$(cat "$LINK_FILE")"
         exit 0
@@ -237,5 +248,6 @@ fi
 [[ -f "$IDENT_FILE" ]] && { source "$IDENT_FILE"; NODE_UUID="${NODE_UUID:-}"; NODE_PATH="${NODE_PATH:-}"; NODE_PORT="${NODE_PORT:-}"; }
 [[ -f "$TUNNEL_ENV" ]] && source "$TUNNEL_ENV"
 save_backup && say "[ok] 恢复完成，身份已备份到 $BACKUP_ENV"
+ensure_supervisor
 say "$(cat "$LINK_FILE" 2>/dev/null)"
 exit 0
