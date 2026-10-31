@@ -33,6 +33,7 @@ ACTION=start
 TUNNEL=1
 WATCH=1
 NEW_IDENT=0
+FORGET_TUNNEL=0
 TUNNEL_TOKEN="${TUNNEL_TOKEN:-}"
 TUNNEL_HOST="${TUNNEL_HOST:-}"
 
@@ -47,6 +48,7 @@ usage() {
       --tunnel-token <token>   用 Cloudflare 命名隧道（固定域名），需配合 --tunnel-host
       --tunnel-host <域名>     命名隧道对应的公网域名（CF 后台已配好指向该隧道）
       --no-tunnel     只起本地节点, 不开 Cloudflare 隧道
+      --forget-tunnel 清除记住的命名隧道配置（tunnel.env），之后无参启动会退回临时隧道
       --no-watch      不起守护进程（默认会起，掉线自动拉起）
       --status        查看状态 + 当前链接
       --stop          停止节点和隧道
@@ -60,6 +62,7 @@ while [[ $# -gt 0 ]]; do
         --path) WS_PATH="$2"; shift 2 ;;
         --uuid) UUID="$2"; shift 2 ;;
         --no-tunnel) TUNNEL=0; shift ;;
+        --forget-tunnel) FORGET_TUNNEL=1; shift ;;
         --no-watch) WATCH=0; shift ;;
         --new) NEW_IDENT=1; shift ;;
         --tunnel-token) TUNNEL_TOKEN="$2"; shift 2 ;;
@@ -108,6 +111,17 @@ status_all() {
     fi
     [[ -f "$LINK_FILE" ]] && { echo; echo "当前链接:"; cat "$LINK_FILE"; }
 }
+
+# 清除记住的命名隧道配置（不动正在运行的节点/隧道）
+if [[ $FORGET_TUNNEL -eq 1 ]]; then
+    if [[ -f "$TUNNEL_ENV" ]]; then
+        rm -f "$TUNNEL_ENV"
+        echo "[+] 已删除 $TUNNEL_ENV（命名隧道配置已清除，之后无参启动会走临时隧道）"
+    else
+        echo "[i] 没有 $TUNNEL_ENV，无需清除"
+    fi
+    exit 0
+fi
 
 # 若之前配过命名隧道（tunnel.env 存在），自动沿用，避免重启后退回随机域名
 if [[ $TUNNEL -eq 1 && -z "$TUNNEL_TOKEN" && -f "$TUNNEL_ENV" ]]; then
@@ -229,9 +243,10 @@ if [[ $TUNNEL -eq 1 ]]; then
         elif grep -qiE 'token is not valid|invalid token|Unauthorized|failed to (parse|connect)' "$CF_LOG"; then
             echo "[!] 命名隧道连接失败（token 无效或后台未配置该域名）：" >&2
             grep -iE 'not valid|Unauthorized|invalid' "$CF_LOG" | head -2 >&2
-            kill "$(cat "$CF_PID")" 2>/dev/null; rm -f "$CF_PID" "$TUNNEL_ENV"
+            kill "$(cat "$CF_PID")" 2>/dev/null; rm -f "$CF_PID"
             host=""
             echo "[!] 已退回：只启动本地节点（未开隧道）" >&2
+            echo "[!] 保留 $TUNNEL_ENV（换 token: --tunnel-token <新token>；清除: --forget-tunnel）" >&2
         else
             echo "[!] 命名隧道尚未确认连接，日志: $CF_LOG" >&2
         fi
@@ -245,7 +260,10 @@ if [[ $TUNNEL -eq 1 ]]; then
             [[ -n "$host" ]] && break
             sleep 1
         done
-        rm -f "$TUNNEL_ENV"
+        rm -f "$CF_PID"
+        # 注意：这里**故意不删** tunnel.env。临时隧道跑一次不该把"固定域名"的配置抹掉，
+        # 否则下次无参启动就再也回不到命名隧道了。要清除请用 --forget-tunnel。
+        [[ -f "$TUNNEL_ENV" ]] && echo "[!] 已保留命名隧道配置 $TUNNEL_ENV（下次无参启动仍会走固定域名）"
     fi
     if [[ -z "$host" ]]; then
         echo "[!] 隧道建不起来（可能网络限制），只保留本地节点" >&2

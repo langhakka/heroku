@@ -194,12 +194,35 @@ bash test/demo-node.sh      # 自动沿用 固定域名 + 固定 UUID/路径 + �
 
 #### 整个容器被重建后（`.cache` 也没了）的恢复
 
-`identity.env` / `tunnel.env` 都在 `.cache/`（gitignore，不会进仓库），所以**容器重建 = 身份和命名隧道 token 一起丢**。这时无参 `bash test/demo-node.sh` 只能给你一个**全新的** UUID/路径 + 随机 `trycloudflare.com` 域名，旧客户端配置必然失效。想恢复成"和以前完全一样"，必须把这三样重新喂回去：
+先明确哪些东西存在哪：
+
+| 文件 | 内容 | 在仓库里吗 |
+| --- | --- | --- |
+| `.cache/vless-demo/identity.env` | 节点 UUID / WS 路径 / 端口 | ❌ 被 `.gitignore` 排除（`.cache/`），只在容器本地 |
+| `.cache/vless-demo/tunnel.env` | 命名隧道 **token** + 固定域名 | ❌ 同上 |
+| `vless/test/demo-node.sh` 等脚本 | 恢复用的逻辑 | ✅ 入库 |
+| `vless/README.md` | 固定域名、UUID 前缀等**记录** | ✅ 入库（但 token 从不写进去） |
+
+所以**容器重建 = `identity.env` 和 `tunnel.env` 一起丢**：脚本还在、域名还记在文档里，唯独 token 没了。这时无参 `bash test/demo-node.sh` 只能给你一个**全新的** UUID/路径 + 随机 `trycloudflare.com` 域名，旧客户端配置必然失效。想恢复成"和以前完全一样"，必须把 token 重新喂回去（UUID/路径/端口同理）：
 
 ```bash
 bash test/demo-node.sh --port 8001 --uuid <原UUID> --path <原路径> \
     --tunnel-token <CF 隧道 token> --tunnel-host <原固定域名>
 ```
+
+token 也可以从环境变量给（脚本原生支持，适合放进 CI/容器启动脚本，不用落在磁盘上）：
+
+```bash
+TUNNEL_TOKEN='<token>' TUNNEL_HOST=aida.adg007.kdns.fr bash test/demo-node.sh --port 8001 \
+    --uuid <原UUID> --path <原路径>
+```
+
+token 位置：Cloudflare Dashboard → Zero Trust → Networks → Tunnels → 选中隧道 → *Install connector / 复制 token*。
+
+> 三点行为说明（踩过的坑）：
+> 1. 跑一次**临时隧道**不会再把 `tunnel.env` 删掉（以前会），否则"临时试一下"就把固定域名配置销毁了；
+> 2. 想主动清除记住了的命名隧道配置，用 `bash test/demo-node.sh --forget-tunnel`（只删 `tunnel.env`，不动正在跑的进程）。
+> 3. token 无效时只回退到"仅本地节点"，配置保留，换 token 用 `--tunnel-token <新token>`。
 
 也就是说：**UUID/路径/端口 + 隧道 token 要自己留一份在容器外**（密码管理器 / GitHub Secrets），仓库里只放脚本。实测一次容器重建后的恢复：新起节点拿到 `127.0.0.1:8001` + 新 UUID/路径 + 新 quick tunnel 域名，101 自检通过，客户端 SOCKS → VLESS/WS/TLS → 隧道 → 出网正常（`curl --socks5-hostname ... https://api.ipify.org` 返回出口 IP），只是链接要重新导入客户端。
 
